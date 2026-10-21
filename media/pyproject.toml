@@ -1,0 +1,33 @@
+[project]
+name = "flux3-diffusers-media"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "torch==2.11.0",
+  "torchvision==0.26.0",
+  "diffusers",
+  "transformers==5.8.1",
+  "accelerate==1.13.0",
+  "safetensors==0.8.0",
+  "pillow>=10.3,<13",
+]
+
+[dependency-groups]
+test = ["pytest>=8.3,<9"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+diffusers = { git = "https://github.com/huggingface/diffusers.git", rev = "1ddaf8f4e7c33afaa7c6c2c3be9e56f2c2a634c8" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+markers = ["e2e: real CUDA inference; enable with --run-e2e"]

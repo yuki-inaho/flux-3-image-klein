@@ -66,22 +66,28 @@ Same prompt, same seed: distilled (16 steps) left, base (50 steps, CFG) right. O
 
 ## Local installation
 
-
-To run FLUX 3 Image Klein in BF16 and FP8:
-
-```bash
-python3.12 -m venv .venv && . .venv/bin/activate
-pip install -e . --extra-index-url https://download.pytorch.org/whl/cu130
-```
-
-To run FLUX 3 Image Klein in BF16, FP8 and NVFP4 (NVFP4 needs a Blackwell GPU):
+### uv (Linux x86_64, NVIDIA CUDA 13)
 
 ```bash
-python3.12 -m venv .venv && . .venv/bin/activate
-pip install -e '.[nvfp4]' --extra-index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://flashinfer.ai/whl/cu130
+uv python install 3.12
+uv sync --managed-python --locked --group test
+uv run python scripts/cli.py --help
 ```
 
-The installation was tested on B200; see [Memory](#memory) for other GPUs.
+Python 3.12 is selected by `.python-version`. `uv.lock` pins the environment;
+PyTorch uses the CUDA 13.0 wheel index. Python 3.11 is also supported.
+For optional Blackwell NVFP4 kernels:
+
+```bash
+uv sync --managed-python --locked --group test --extra nvfp4
+```
+
+See [日本語: uv・RTX 5090・Diffusers・E2E](memo.txt) for all three models,
+sequential upsampling on a 32 GB GPU, image generation/editing, and real inference tests.
+The independent `media/` uv project runs Diffusers without vLLM and uses component CPU offload.
+
+With `just` installed, run `just test-minimal` for the monitored 256x256 GPU smoke test,
+or `just generate` for an 800x608 FP8 sample. Run `just` to list the commands.
 
 ### Weights
 

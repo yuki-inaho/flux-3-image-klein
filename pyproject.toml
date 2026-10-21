@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Inference codebase for FLUX 3 Image Klein"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 authors = [
   { name = "Black Forest Labs", email = "support@blackforestlabs.ai" }
 ]
@@ -49,3 +49,23 @@ target-version = "py312"
 ignore = [
   "E501",  # line too long (handled by formatter)
 ]
+
+[dependency-groups]
+test = ["pytest>=8.3,<9"]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+flashinfer-jit-cache = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.8.post1/flashinfer_jit_cache-0.6.8.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["e2e: real CUDA image generation; enable with --run-e2e"]

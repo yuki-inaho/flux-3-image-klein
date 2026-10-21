@@ -7,3 +7,15 @@ __pycache__/
 !src/flux3/pup_prompts_external_vlm.json
 !examples/**
 *.egg-info/
+artifacts/
+.pytest_cache/
+.ruff_cache/
+
+prompt.txt
+edit-prompt.txt
+
+# Local credentials and execution logs
+.env
+.env.*
+!.env.example
+*.log

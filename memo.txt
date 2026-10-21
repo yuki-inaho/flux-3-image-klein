@@ -1,0 +1,186 @@
+# uvでFLUX 3の画像生成・編集を実行する
+
+リポジトリのルートで実行します。Linux x86_64、NVIDIA CUDA対応GPU、対応ドライバが必要です。
+Pythonは`.python-version`で3.12を指定します。`uv sync`は必要ならPythonも取得します。
+画像生成モデルはBaseと通常版（distilled）の両方に対応し、Prompt Upsamplerを利用します。
+
+## justfileで簡単に実行する
+
+リポジトリ直下で実行します（`just`と`uv`が必要）。事前に両方をインストールしてください。
+
+```bash
+just                 # コマンド一覧
+just setup           # uv環境を準備
+just test-minimal    # 256×256・4ステップ、両FP8モデルの生成・編集を監視付きで確認
+just generate        # 通常版FP8、800×608・16ステップでサンプル生成
+```
+
+`just test-minimal 256 8`で解像度とステップ数を変更できます。
+`just generate 768 576`でサイズ変更、`just generate 800 608 base`でBase（50ステップ）を選べます。
+生成する内容は同梱のUpsampler実出力（白い壁と赤い自転車）を使います。
+生成結果は`artifacts/generated/<model>-<width>x<height>.png`、設定は同名のJSON、
+メモリ監視記録は`*-resources.csv`に保存します。同じ設定で再実行するとそのファイルを上書きします。
+重みは事前に取得してください。`just test-minimal`はUpsamplerのロードを省き、そのテストだけスキップします。
+
+## 1. 参照実装の環境
+
+```bash
+uv python install 3.12
+uv sync --managed-python --locked --group test
+uv run python scripts/cli.py --help
+uv run python scripts/app.py --help
+uv run python -m flux3.pup --help
+```
+
+uv管理のPythonを使い、Tritonが必要とする`Python.h`も揃えます。システムPythonを使う場合はPython開発用ヘッダーが別途必要です。
+PyTorch / torchvisionはCUDA 13.0の公式インデックスから取得します。
+任意のNVFP4機能（Blackwell向け）は次で追加できます。
+
+```bash
+uv sync --managed-python --locked --group test --extra nvfp4
+```
+
+`nvfp4`のプリビルドカーネルは約2GBあります。依存はLinux x86_64を対象にロックしています。
+
+## 2. Hugging Faceでのモデル承認と取得
+
+以下の両モデルのページで利用条件を確認し、アクセス承認を済ませてください。
+
+- https://huggingface.co/black-forest-labs/flux-3-image-klein
+- https://huggingface.co/black-forest-labs/flux-3-image-klein-base
+
+承認済みアカウントの読み取りトークンで、ローカル端末からログインします。
+既に`.bashrc`などから`HF_TOKEN`をexportしている場合は、その環境変数をそのまま利用でき、ログイン操作は不要です。
+トークンはリポジトリやテストログに保存しないでください。
+
+```bash
+uv run hf auth login
+uv run python scripts/download_weights.py --model all --quant fp8
+```
+
+これで両画像モデルのFP8 DiT、各text encoder / autoencoder、Upsampler、NSFW分類器を取得します。
+Baseを使う場合もそのモデル配下のtext encoder / autoencoderが必要です。
+`--model base`、`--model distilled`、`--model pup`で個別取得できます。
+BF16なら`--quant bf16`、NVFP4なら`--quant nvfp4`を指定します。
+`WEIGHTS_DIR`または`--weights-dir`で取得先を変更できます。
+実行時も同じ`WEIGHTS_DIR`を指定してください。
+認証がない場合、画像モデルはHTTP 401/403となります。Upsamplerは単独で取得できます。
+大きなモデルなので、環境とモデルを合わせて数十GB以上の空き容量を確保してください。
+
+## 3. RTX 5090 32GBで順番に実行する
+
+Upsamplerと画像モデルを別プロセスにして、GPUメモリを解放してから次へ進みます。
+以下はシェルの例です。Upsamplerを使っていない短いプロンプトを、そのまま`--no-pup`に渡さないでください。
+
+```bash
+uv run python -m flux3.pup --prompt "A red bicycle leaning against a white wall, afternoon sunlight." --out prompt.txt
+uv run python scripts/cli.py "$(cat prompt.txt)" --model distilled --fp8 --no-pup --seed 7 --width 512 --height 512 --out artifacts/distilled.png
+uv run python scripts/cli.py "$(cat prompt.txt)" --model base --fp8 --no-pup --seed 7 --width 512 --height 512 --out artifacts/base.png
+```
+
+通常版は16ステップ・CFGなし、Baseは50ステップ・CFG 4がデフォルトです。
+FP8はAda / Hopper / Blackwell向けです。5090であっても空きVRAM・解像度によりOOMになる場合があります。
+初回は512×512から試してください。
+
+編集時も参照画像をUpsamplerへ渡します。
+
+```bash
+uv run python -m flux3.pup --prompt "Change the red bicycle to blue." --image artifacts/distilled.png --out edit-prompt.txt
+uv run python scripts/cli.py "$(cat edit-prompt.txt)" --model distilled --fp8 --no-pup --image artifacts/distilled.png --seed 8 --out artifacts/edited.png
+```
+
+出力画像と同じ場所にプロンプト・seedなどを記録したJSONが保存されます。
+
+## 4. Diffusersで画像生成・編集
+
+`media/`は独立したuvプロジェクトです。参照実装のvLLM依存と分けています。
+FLUX 3対応が必要なため、Diffusersは対応するGitコミットへ固定しています（PyPI 0.41.0には未収録）。
+
+```bash
+uv sync --project media --managed-python --locked --group test
+uv run --project media hf auth login
+uv run --project media python media/image.py "A red bicycle leaning against a white wall, afternoon sunlight." --model distilled --out artifacts/diffusers/red.png
+uv run --project media python media/image.py "Change the bicycle to blue, keep the wall and lighting unchanged." --model distilled --image artifacts/diffusers/red.png --out artifacts/diffusers/blue.png
+uv run --project media python media/image.py "A fox in a snowy forest at golden hour." --model base --out artifacts/diffusers/base.png
+```
+
+必要なDiffusers形式の重みはHubキャッシュへ自動取得します。参照実装の`weights/`とは別形式なので追加容量が必要です。
+`HF_HOME`でHubキャッシュの場所を変更できます。
+公式の`ComponentsManager.enable_auto_cpu_offload()`により、Upsampler・text encoder・DiTなどを順番にGPUへ移します。
+CPU RAMも使用します。`--image`は最大10回指定可能、`--width` / `--height`は64〜4096の16の倍数です。
+Baseは50ステップ・CFG 4、通常版は16ステップ・CFGなしを指定しています。
+画像とJSONに、展開後プロンプト・seed・参照画像・実行時間などを保存します。
+
+公式仕様: https://github.com/huggingface/diffusers/blob/main/docs/source/en/api/pipelines/flux3.md
+
+## 5. E2Eテスト
+
+依存インポートとCLIの起動確認（モデル取得不要）:
+
+```bash
+uv run --locked --group test pytest tests -q
+uv run --project media --locked --group test pytest -q media/test_image.py
+```
+
+### まず小画像で確認する（256×256・4ステップ）
+
+前回実際のUpsamplerが出力した文章を`tests/fixtures/captions/`に同梱しています。
+小画像の確認ではこれを使い、9BのUpsamplerを再ロードせずに両モデルの生成・編集を実行できます。
+生成・編集そのものは実GPU・実モデルで実行します。Upsamplerのテストは再利用時に明示的にスキップします。
+
+```bash
+uv run --locked --group test python scripts/monitor_e2e.py --log artifacts/e2e-minimal/resources.csv -- .venv/bin/python -m pytest tests -q --run-e2e --e2e-caption-dir tests/fixtures/captions --e2e-artifacts artifacts/e2e-minimal
+```
+
+監視は2秒間隔でcgroup全体のRAMとGPU全体のVRAMを記録し、既定でRAM 64GiBまたはVRAM 30000MiBを超えると、
+起動したテストのプロセスグループを停止します。他プロセスの使用量やページキャッシュも含む観測値です。
+`--ram-gib` / `--vram-mib`で上限を変更できます。GPU処理は並列実行しないでください。
+画像を小さくすると推論の作業領域は減りますが、モデル重みやUpsampler自体のサイズは変わりません。
+
+Upsamplerも含めて実行する場合:
+
+```bash
+uv run --locked --group test pytest tests -q --run-e2e
+```
+
+既定のE2Eは256×256・4ステップです。これは実行可否の確認用で、品質を判定する設定ではありません。
+通常の512×512・モデル標準ステップ（distilled 16、Base 50）で確認する場合は
+`--e2e-size 512 --e2e-steps 0`を追加します。`--e2e-steps`が0以外ならその値が両モデルに適用されます。
+Upsampler単体は`-k prompt_upsampler`を追加します。
+`--e2e-quant bf16` / `--e2e-quant nvfp4`を指定する場合、対応する重みと依存を先に入れてください。
+
+Diffusersの実モデルE2E（既定は同じく256×256・4ステップ）:
+
+```bash
+uv run --project media --locked --group test pytest -q media/test_image.py --run-e2e
+```
+
+両モデルで生成→生成画像の編集を検証します。Diffusers側は内蔵Upsamplerも実行します。
+GPU・重み・アクセス承認が必要で、明示実行時に不足があれば失敗します。
+通常テストでは実モデルのテストをスキップし、モデルをモックに置き換えることはありません。
+画像の復号・サイズ・非単色・編集前後の差分とJSONの設定を検証します。
+プロンプト通りの意味的品質を自動採点するものではありません。
+画像・JSON・各プロセスのログは`--e2e-artifacts PATH`で指定した場所（既定`artifacts/e2e/`）に残ります。
+`--e2e-timeout SECONDS`で1プロセスの制限（既定1800秒）を変更できます。
+
+## 検証結果
+
+RTX 5090 32GBで以下を確認済みです。
+
+- 参照実装の通常テスト: 4件成功、実推論3件は明示実行時だけ有効。
+- `just test-minimal`: 6件成功・1件スキップ。通常版FP8とBase FP8で256×256・4ステップの生成・編集を実行。
+  スキップは同梱の実出力キャプションを使うUpsamplerテスト。Upsampler単体の実GPU推論は別途成功済み。
+- Diffusers: 3件成功。両モデルの512×512生成・編集を確認。通常版16ステップ、Base 50ステップ・CFG 4。
+- `just generate`: 通常版FP8・16ステップ・seed 7で800×608画像を生成し、画像のサイズと表示を確認。
+- NVFP4の依存解決は確認済み。NVFP4実推論と4K出力は未検証。
+
+4ステップのテストは実行可否の確認用です。通常の品質確認にはモデル標準ステップを使ってください。
+画像サイズを小さくしても、モデル重みやUpsamplerのメモリ使用量は同じです。
+監視は停止上限と使用量の記録を提供しますが、OSやGPUドライバのハングを防ぐ保証はありません。
+
+公開対象はコード・設定・ロックファイル・一般的なサンプル文章・このメモです。
+生成画像、生成記録、ログ、重み、認証情報、ローカル環境固有の絶対パスは公開対象に含めません。
+
+公開前確認: 認証の経緯や環境固有の運用記録は除外しました。
+再現に必要な公開モデル・配布元のURLと、自転車を題材にした一般的なサンプル文章は残しています。
+画像・実行ログ・重み・ローカル認証ファイルはGit管理の対象外です。
